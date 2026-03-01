@@ -11,11 +11,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    raise RuntimeError("GEMINI_API_KEY not set")
+
+genai.configure(api_key=api_key)
+
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 ALLOWED_ORIGINS = ["http://localhost:5173"]
 
 app = FastAPI(title="Resume Analyzer API")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -68,13 +73,14 @@ def parse_score(raw_response: str) -> Optional[int]:
 
 
 def evaluate_with_gemini(resume_text: str, jd_text: str) -> int:
+    for m in genai.list_models():
+        print(m.name, m.supported_generation_methods)
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured")
 
-    genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
+        model_name="gemini-2.5-flash",
         system_instruction=(
             "You are a strict resume evaluator.\n"
             "Return ONLY a number between 0 and 10.\n"
@@ -96,7 +102,8 @@ def evaluate_with_gemini(resume_text: str, jd_text: str) -> int:
             generation_config={"temperature": 0},
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Failed to get response from Gemini") from exc
+        print("Gemini exception:", repr(exc))
+        raise
 
     raw_output = getattr(response, "text", "") or ""
     score = parse_score(raw_output)
