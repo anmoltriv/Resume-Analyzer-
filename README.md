@@ -1,56 +1,31 @@
-# Resume Analyzer MVP
+# Resume Analyzer Backend (Modular ML Engine)
 
-Minimal full-stack project with:
-- **Backend:** FastAPI + PyMuPDF + Gemini API
-- **Frontend:** React (Vite)
+FastAPI backend for deterministic resume ↔ JD matching with optional Gemini augmentation.
 
-## Project structure
+## API
 
-```text
-backend/
-  main.py
-  requirements.txt
-  .env.example
-frontend/
-  index.html
-  package.json
-  vite.config.js
-  src/
-    main.jsx
-    App.jsx
-    styles.css
-```
+- `POST /analyze`
+- Multipart fields:
+  - `resume_pdf` (required PDF)
+  - `jd_type` (`pdf`, `image_pdf`, `url`)
+  - `jd_pdf` (required when type is `pdf` / `image_pdf`)
+  - `jd_url` (required when type is `url`)
 
-## Backend setup (FastAPI)
+Returns weighted hybrid scoring with explainability fields and per-role breakdown.
+
+## Training
 
 ```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env
-# add your GEMINI_API_KEY in .env
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python backend/train_vectorizer.py
 ```
 
-Backend endpoint:
-- `POST /evaluate`
-- Form fields: `resume_pdf`, `jd_pdf`
-- Returns: `{ "score": <int> }`
+This fits TF-IDF on up to 20 JD PDFs under `backend/data/jds`, then persists:
+- `backend/models/vectorizer.pkl`
+- `backend/models/jd_vector_store.pkl`
 
-## Frontend setup (React + Vite)
+## Run
 
 ```bash
-cd frontend
-npm install
-npm run dev -- --host 0.0.0.0 --port 5173
+pip install -r backend/requirements.txt
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
-
-Open `http://localhost:5173`.
-The frontend posts files to `http://localhost:8000/evaluate`.
-
-## Notes
-
-- Max upload size is **10MB per PDF**.
-- CORS allows `http://localhost:5173`.
-- Gemini model: `gemini-1.5-flash` with `temperature=0`.

@@ -1,29 +1,35 @@
-import io
-import os
-import re
-from typing import Optional
+import logging
 
-import fitz
-import google.generativeai as genai
-from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-load_dotenv()
+from backend.api.routes import build_routes
+from backend.config import settings
+from backend.extractor.jd_extractor import JDExtractor
+from backend.extractor.ocr_extractor import OCRExtractor
+from backend.extractor.pdf_extractor import PDFExtractor
+from backend.extractor.url_extractor import URLExtractor
+from backend.features.keyword_engine import KeywordEngine
+from backend.features.tfidf_engine import TfidfEngine
+from backend.preprocessing.boilerplate_remover import BoilerplateRemover
+from backend.preprocessing.cleaner import TextCleaner
+from backend.preprocessing.lemmatizer import Lemmatizer
+from backend.preprocessing.pipeline import PreprocessingPipeline
+from backend.preprocessing.role_segmenter import RoleSegmenter
+from backend.preprocessing.structure_parser import StructureParser
+from backend.preprocessing.tokenizer import Tokenizer
+from backend.scoring.cosine_scorer import CosineScorer
+from backend.scoring.gemini_scorer import GeminiScorer
+from backend.scoring.hybrid_scorer import HybridScorer
+from backend.scoring.structure_scorer import StructureScorer
+from backend.services.ml_analyzer import AnalyzerDependencies, MLAnalyzerService
 
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    raise RuntimeError("GEMINI_API_KEY not set")
-
-genai.configure(api_key=api_key)
-
-MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
-ALLOWED_ORIGINS = ["http://localhost:5173"]
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Resume Analyzer API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=list(settings.allowed_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,100 +39,26 @@ app.add_middleware(
 @app.middleware("http")
 async def enforce_content_length(request, call_next):
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > (MAX_UPLOAD_SIZE * 2) + (1024 * 1024):
+    if content_length and int(content_length) > (settings.max_upload_size * 2) + (1024 * 1024):
         raise HTTPException(status_code=413, detail="Request payload too large")
     return await call_next(request)
 
 
-def extract_pdf_text(file_bytes: bytes) -> str:
-    if len(file_bytes) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="Each PDF must be 10MB or less")
-
-    try:
-        document = fitz.open(stream=io.BytesIO(file_bytes), filetype="pdf")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Invalid PDF file") from exc
-
-    extracted_pages = [page.get_text() for page in document]
-    document.close()
-    text = "\n".join(extracted_pages).strip()
-
-    if not text:
-        raise HTTPException(status_code=400, detail="Uploaded PDF has no extractable text")
-
-    return text
-
-
-def parse_score(raw_response: str) -> Optional[int]:
-    text = raw_response.strip()
-
-    if re.fullmatch(r"\d+(?:\.\d+)?", text):
-        numeric = int(round(float(text)))
-        return max(0, min(10, numeric))
-
-    match = re.search(r"-?\d+", text)
-    if match:
-        numeric = int(match.group(0))
-        return max(0, min(10, numeric))
-
-    return None
-
-
-def evaluate_with_gemini(resume_text: str, jd_text: str) -> int:
-    for m in genai.list_models():
-        print(m.name, m.supported_generation_methods)
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured")
-
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=(
-            "You are a strict resume evaluator.\n"
-            "Return ONLY a number between 0 and 10.\n"
-            "Do not explain anything.\n"
-            "Do not output text.\n"
-            "Only return the number."
-        ),
+def build_analyzer_service() -> MLAnalyzerService:
+    deps = AnalyzerDependencies(
+        jd_extractor=JDExtractor(PDFExtractor(), OCRExtractor(), URLExtractor()),
+        pipeline=PreprocessingPipeline(TextCleaner(), Tokenizer(), Lemmatizer(), BoilerplateRemover()),
+        role_segmenter=RoleSegmenter(),
+        structure_parser=StructureParser(),
+        tfidf_engine=TfidfEngine(settings.vectorizer_path),
+        keyword_engine=KeywordEngine(),
+        structure_scorer=StructureScorer(),
+        cosine_scorer=CosineScorer(),
+        gemini_scorer=GeminiScorer(settings.gemini_enabled, settings.gemini_api_key),
+        hybrid_scorer=HybridScorer(),
     )
-
-    user_prompt = (
-        "Evaluate how well the following resume fits the job description.\n\n"
-        f"Resume:\n{resume_text}\n\n"
-        f"Job Description:\n{jd_text}"
-    )
-
-    try:
-        response = model.generate_content(
-            user_prompt,
-            generation_config={"temperature": 0},
-        )
-    except Exception as exc:
-        print("Gemini exception:", repr(exc))
-        raise
-
-    raw_output = getattr(response, "text", "") or ""
-    score = parse_score(raw_output)
-
-    if score is None:
-        raise HTTPException(status_code=502, detail="Gemini returned an invalid score format")
-
-    return score
+    return MLAnalyzerService(deps)
 
 
-@app.post("/evaluate")
-async def evaluate_resume(
-    resume_pdf: UploadFile = File(...),
-    jd_pdf: UploadFile = File(...),
-):
-    if resume_pdf.content_type != "application/pdf" or jd_pdf.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="Both files must be PDFs")
-
-    resume_bytes = await resume_pdf.read()
-    jd_bytes = await jd_pdf.read()
-
-    resume_text = extract_pdf_text(resume_bytes)
-    jd_text = extract_pdf_text(jd_bytes)
-
-    score = evaluate_with_gemini(resume_text, jd_text)
-    return {"score": score}
+analyzer_service = build_analyzer_service()
+app.include_router(build_routes(analyzer_service, settings.max_upload_size))
