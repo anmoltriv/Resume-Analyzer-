@@ -1,30 +1,31 @@
 import { useState } from 'react'
+import UploadForm from './components/UploadForm'
+import ResultsPanel from './components/ResultsPanel'
+import ReviewBox from './components/ReviewBox'
 
-const API_URL = 'http://localhost:8000/evaluate'
+const API_URL = 'http://localhost:8000/analyze'
 
 export default function App() {
-  const [resumeFile, setResumeFile] = useState(null)
-  const [jdFile, setJdFile] = useState(null)
-  const [score, setScore] = useState(null)
-  const [error, setError] = useState('')
+  const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
-  const handleSubmit = async (event) => {
-    event.preventDefault()
+  const handleAnalyze = async ({ resumeFile, jdType, jdFile, jdUrl }) => {
     setError('')
-    setScore(null)
-
-    if (!resumeFile || !jdFile) {
-      setError('Please upload both PDFs before submitting.')
-      return
-    }
+    setLoading(true)
+    setResults(null)
 
     const formData = new FormData()
     formData.append('resume_pdf', resumeFile)
-    formData.append('jd_pdf', jdFile)
+    formData.append('jd_type', jdType)
+
+    if (jdType === 'url') {
+      formData.append('jd_url', jdUrl)
+    } else {
+      formData.append('jd_pdf', jdFile)
+    }
 
     try {
-      setLoading(true)
       const response = await fetch(API_URL, {
         method: 'POST',
         body: formData,
@@ -33,62 +34,31 @@ export default function App() {
       const data = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.detail || 'Unable to evaluate documents.')
+        throw new Error(data.detail || 'Unable to analyze resume right now.')
       }
 
-      setScore(data.score)
+      setResults(data)
     } catch (submitError) {
-      setError(submitError.message || 'Something went wrong.')
+      setError(submitError.message || 'Unexpected error while analyzing the documents.')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <main className="page">
-      <section className="card">
-        <h1>Resume Analyzer</h1>
-        <p className="subtitle">Upload your Resume and Job Description PDFs to get a fit score.</p>
+    <main className="app-shell">
+      <header className="app-header">
+        <h1>Resume Analyzer — Hybrid ML Matching Engine</h1>
+        <p>Deterministic IR + ML scoring with explainable insights</p>
+      </header>
 
-        <form onSubmit={handleSubmit} className="form">
-          <label>
-            Resume PDF
-            <input
-              type="file"
-              accept="application/pdf"
-              onChange={(event) => setResumeFile(event.target.files?.[0] || null)}
-            />
-          </label>
+      <UploadForm onSubmit={handleAnalyze} loading={loading} />
 
-          <label>
-            Job Description PDF
-            <input
-              type="file"
-              accept="application/pdf"
-              onChange={(event) => setJdFile(event.target.files?.[0] || null)}
-            />
-          </label>
+      {error && <div className="error-banner">{error}</div>}
 
-          <button type="submit" disabled={loading}>
-            {loading ? 'Evaluating...' : 'Get Score'}
-          </button>
-        </form>
+      {results && <ResultsPanel data={results} />}
 
-        {loading && (
-          <div className="spinner-wrap">
-            <div className="spinner" aria-label="loading" />
-          </div>
-        )}
-
-        {error && <p className="error">{error}</p>}
-
-        {score !== null && !loading && (
-          <div className="score-card">
-            <p className="score-label">Match Score</p>
-            <p className="score-value">{score}/10</p>
-          </div>
-        )}
-      </section>
+      <ReviewBox />
     </main>
   )
 }
